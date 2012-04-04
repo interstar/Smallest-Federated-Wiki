@@ -128,7 +128,8 @@ $ ->
     $(element).data("item") or JSON.parse($(element).data('staticItem')) if $(element).length > 0
 
   wiki.getData = ->
-    $('.chart,.data').last().data('item').data
+    who = $('.chart,.data,.calculator').last()
+    if who? then who.data('item').data else {}
 
   scripts = {}
   wiki.getScript = (url, callback = () ->) ->
@@ -335,6 +336,9 @@ $ ->
         $("<div />").addClass(className).appendTo(pageElement)
 
       $.each page.story, (i, item) ->
+        if $.isArray item
+          wiki.log 'fixing corrupted item', i, item
+          item = item[0]
         div = $("<div />").addClass("item").addClass(item.type).attr("data-id", item.id)
         storyElement.append div
         doPlugin div, item

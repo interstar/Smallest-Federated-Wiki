@@ -27,11 +27,10 @@ defargs = require('./defaultargs')
 # easiest way to use the Smallest Federated Wiki with a database backend.
 pageFactory = require('./page')
 
-# When server factory is first started attempt to
-# set version to the git sha id of the last commit.
-version = ''
-gitVersion = child_process.exec('git rev-parse HEAD', (err, stdout, stderr) ->
-  version = stdout
+# When the server factory is first started attempt to retrieve the gitlog.
+gitlog = ''
+gitVersion = child_process.exec('git log -10 --oneline || echo no git log', (err, stdout, stderr) ->
+  gitlog = stdout
   )
 
 # Set export objects for node and coffee to a function that generates a sfw server.
@@ -42,6 +41,11 @@ module.exports = exports = (argv) ->
   # that is passed in and then does its
   # best to supply sane defaults for any arguments that are missing.
   argv = defargs(argv)
+  app.startOpts = do ->
+    options = {}
+    for own k, v of argv
+      options[k] = v
+    options
   # Construct authentication handler.
   passport = new passportImport.Passport()
   # Tell pagehandler where to find data, and default data.
@@ -227,7 +231,7 @@ module.exports = exports = (argv) ->
           'logout'
         else 'login'
       else 'claim'
-      sha: version
+      gitlog
     }
     for page, idx in urlPages
       if urlLocs[idx] is 'view'
@@ -243,7 +247,8 @@ module.exports = exports = (argv) ->
               window.catalog = {
                 "ByteBeat": {"menu": "8-bit Music by Formula"},
                 "MathJax": {"menu": "TeX Formatted Equations"},
-                "Calculator": {"menu": "Running Sums for Expenses"}
+                "Calculator": {"menu": "Running Sums for Expenses"},
+                "wikish": {"menu": "ThoughtStorms Wikish"}
               };
 
               """
@@ -421,8 +426,6 @@ module.exports = exports = (argv) ->
   # Wait to make sure owner is known before listening.
   setOwner( null, ->
     app.listen(argv.p, argv.o if argv.o)
-    # When server is listening emit a ready event.
-    app.emit "ready"
     console.log("Smallest Federated Wiki server listening on #{app.address().port} in mode: #{app.settings.env}")
   )
   # Return app when called, so that it can be watched for events and shutdown with .close() externally.
