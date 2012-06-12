@@ -3,8 +3,12 @@ window.plugins.factory =
     div.append '<p>Double-Click to Edit<br>Drop Text or Image to Insert</p>'
     if window.catalog?
       menu = div.find('p').append "<br>Or Choose a Plugin"
-      for name, info of window.catalog
-        menu.append "<li><a href='#' title='#{info.menu}'>#{name}</a></li>"
+      if Array.isArray window.catalog
+        for info in window.catalog
+          menu.append "<li><a href='#' title='#{info.title}'>#{info.name}</a></li>"
+      else
+        for name, info of window.catalog # deprecated
+          menu.append "<li><a href='#' title='#{info.menu}'>#{name}</a></li>"
   bind: (div, item) ->
 
     syncEditAction = () ->
@@ -20,7 +24,7 @@ window.plugins.factory =
           plugin.bind div, item
       catch err
         div.append "<p class='error'>#{err}</p>"
-      wiki.putAction pageElement, {type: 'edit', id: item.id, item: item}
+      wiki.pageHandler.put pageElement, {type: 'edit', id: item.id, item: item}
 
     div.dblclick ->
       div.removeClass('factory').addClass(item.type='paragraph')

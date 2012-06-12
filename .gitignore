@@ -1,5 +1,7 @@
 .DS_Store
 *.swp
+*.iml
+.idea/
 .sass-cache
 .rvmrc
 /data

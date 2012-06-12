@@ -1,5 +1,5 @@
 util = require('./util.coffee')
-fetch = require('./fetch.coffee')
+pageHandler = require('./pageHandler.coffee')
 plugin = require('./plugin.coffee')
 state = require('./state.coffee')
 
@@ -27,7 +27,7 @@ handleDragging = (evt, ui) ->
     before = wiki.getItem(beforeElement)
     {type: 'add', item: item, after: before?.id}
   action.id = item.id
-  wiki.putAction thisPageElement, action
+  pageHandler.put thisPageElement, action
 
 initDragging = (pageElement) ->
   storyElement = pageElement.find('.story')
@@ -38,16 +38,19 @@ initDragging = (pageElement) ->
 initAddButton = (pageElement) ->
   pageElement.find(".add-factory").live "click", (evt) ->
     evt.preventDefault()
-    item =
-      type: "factory"
-      id: util.randomBytes(8)
-    itemElement = $("<div />", class: "item factory").data('item',item).attr('data-id', item.id)
-    itemElement.data 'pageElement', pageElement
-    pageElement.find(".story").append(itemElement)
-    plugin.do itemElement, item
-    beforeElement = itemElement.prev('.item')
-    before = wiki.getItem(beforeElement)
-    wiki.putAction pageElement, {item: item, id: item.id, type: "add", after: before?.id}
+    createFactory(pageElement)
+
+createFactory = (pageElement) ->
+  item =
+    type: "factory"
+    id: util.randomBytes(8)
+  itemElement = $("<div />", class: "item factory").data('item',item).attr('data-id', item.id)
+  itemElement.data 'pageElement', pageElement
+  pageElement.find(".story").append(itemElement)
+  plugin.do itemElement, item
+  beforeElement = itemElement.prev('.item')
+  before = wiki.getItem(beforeElement)
+  pageHandler.put pageElement, {item: item, id: item.id, type: "add", after: before?.id} 
 
 emitHeader = (pageElement, page) ->
   site = $(pageElement).data('site')
@@ -67,6 +70,12 @@ emitHeader = (pageElement, page) ->
               .attr('src', '/favicon.png')
               .attr('height', '32px')
           ), " #{page.title}"))
+  if (rev = pageElement.attr('id').split('_rev')[1])?
+    date = page.journal[page.journal.length-1].date
+    $(pageElement)
+      .append $('<h4 class="revision"/>')
+        .html if date? then util.formatDate(date) else "Revision #{rev}"
+    $(pageElement).addClass 'ghost'
 
 module.exports = refresh = wiki.refresh = ->
   pageElement = $(this)
@@ -104,15 +113,20 @@ module.exports = refresh = wiki.refresh = ->
       $.each page.journal, (i, action) ->
         wiki.addToJournal journalElement, action
 
+      journalElement.append """
+        <div class="control-buttons">
+          <a href="#" class="button fork-page" title="fork this page">#{wiki.symbols['fork']}</a>
+          <a href="#" class="button add-factory" title="add paragraph">#{wiki.symbols['add']}</a>
+        </div>
+                            """
       footerElement
         .append('<a id="license" href="http://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a> . ')
-        .append("<a class=\"show-page-source\" href=\"/#{slug}.json?random=#{util.randomBytes(4)}\" title=\"source\">JSON</a> . ")
-        .append("<a href=\"#\" class=\"add-factory\" title=\"add paragraph\">[+]</a>")
+        .append("<a class=\"show-page-source\" href=\"/#{slug}.json?random=#{util.randomBytes(4)}\" title=\"source\">JSON</a>")
 
       state.setUrl()
 
     initDragging pageElement
     initAddButton pageElement
 
-  fetch pageElement, buildPage
+  pageHandler.get pageElement, buildPage
 

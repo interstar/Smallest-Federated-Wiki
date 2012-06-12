@@ -29,6 +29,24 @@ window.plugins.radar =
           "Physical Waste Total": 25
           "Total score": 100
 
+        candidates = $(".item:lt(#{$('.item').index(div)})")
+        if (who = candidates.filter ".radar-source").size()
+          data = (d.radarData() for d in who)
+          console.log ['got radar-source', who]
+          console.log ['data', data]
+          max = -Infinity
+          keys = {}
+          for d in data
+            for k,v of d
+              keys[k] = 1
+              max = if v>max then v else max
+          limit = {}
+          for k,v of keys
+            limit[k] = max
+        else if (who = candidates.filter ".data").size()
+          data = ($(d).data('item').data[0] for d in who)
+        else throw "Can't find suitable data"
+
         keys = Object.keys(limit)
 
         value = (obj) ->
@@ -43,11 +61,6 @@ window.plugins.radar =
 
         percents = (obj) ->
           (100.0*value(obj[k])/limit[k] for k in keys.concat(keys[0]))
-
-        idx = $('.item').index(div)
-        who = $(".item:lt(#{idx})").filter('.data')
-        data = ($(d).data('item').data[0] for d in who)
-
 
         # Adapted from https://gist.github.com/1630683
 
@@ -73,7 +86,8 @@ window.plugins.radar =
         comments = []
         for m in [0..data.length-1]
           for d in [0..dimension-1]
-             if (c = data[m][keys[d]].comment)?
+            if (o = data[m][keys[d]])?
+             if (c = o.comment)?
               comments.push
                 material: m, dimension: d, comment: c
 
@@ -158,7 +172,7 @@ window.plugins.radar =
           .style("fill-opacity", .1)
           .style("fill", colorSelector)
           .attr("d", d3.svg.line.radial()
-            .radius((d) -> radius d )
+            .radius((d) -> radius(if d? and !isNaN(d) then d else 0))
             .angle((d, i) -> angle i ))
           .append("svg:title").text((d,i) -> data[i]["Material name"])
 

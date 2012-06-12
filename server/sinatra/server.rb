@@ -7,6 +7,10 @@ $LOAD_PATH.unshift(File.dirname(__FILE__))
 SINATRA_ROOT = File.expand_path(File.dirname(__FILE__))
 APP_ROOT = File.expand_path(File.join(SINATRA_ROOT, "..", ".."))
 
+Encoding.default_external = Encoding::UTF_8
+
+require 'server_helpers'
+require 'stores/all'
 require 'random_id'
 require 'page'
 require 'favicon'
@@ -20,7 +24,14 @@ class Controller < Sinatra::Base
   set :views , File.join(SINATRA_ROOT, "views")
   set :haml, :format => :html5
   set :versions, `git log -10 --oneline` || "no git log"
-  enable :sessions
+  if ENV.include?('SESSION_STORE')
+    use ENV['SESSION_STORE'].split('::').inject(Object) { |mod, const| mod.const_get(const) }
+  else
+    enable :sessions
+  end
+  helpers ServerHelpers
+
+  Store.set ENV['STORE_TYPE'], APP_ROOT
 
   class << self # overridden in test
     def data_root
@@ -28,72 +39,30 @@ class Controller < Sinatra::Base
     end
   end
 
-  def farm_page
-    data = File.exists?(File.join(self.class.data_root, "farm")) ? File.join(self.class.data_root, "farm", request.host) : self.class.data_root
+  def farm_page(site=request.host)
     page = Page.new
-    page.directory = File.join(data, "pages")
+    page.directory = File.join data_dir(site), "pages"
     page.default_directory = File.join APP_ROOT, "default-data", "pages"
-    FileUtils.mkdir_p page.directory
+    page.plugins_directory = File.join APP_ROOT, "client", "plugins"
+    Store.mkdir page.directory
     page
   end
 
-  def farm_status
-    data = File.exists?(File.join(self.class.data_root, "farm")) ? File.join(self.class.data_root, "farm", request.host) : self.class.data_root
-    status = File.join(data, "status")
-    FileUtils.mkdir_p status
+  def farm_status(site=request.host)
+    status = File.join data_dir(site), "status"
+    Store.mkdir status
     status
+  end
+
+  def data_dir(site)
+    Store.farm?(self.class.data_root) ? File.join(self.class.data_root, "farm", site) : self.class.data_root
   end
 
   def identity
     default_path = File.join APP_ROOT, "default-data", "status", "local-identity"
     real_path = File.join farm_status, "local-identity"
-    unless File.exist? real_path
-      FileUtils.mkdir_p File.dirname(real_path)
-      FileUtils.cp default_path, real_path
-    end
-
-    JSON.parse(File.read(real_path))
-  end
-
-  helpers do
-    def cross_origin
-      headers 'Access-Control-Allow-Origin' => "*" if request.env['HTTP_ORIGIN']
-    end
-
-    def resolve_links string
-      string.
-        gsub(/\[\[([^\]]+)\]\]/i) {
-                    |name|
-                    name.gsub!(/^\[\[(.*)\]\]/, '\1')
-
-                    slug = name.gsub(/\s/, '-')
-                    slug = slug.gsub(/[^A-Za-z0-9-]/, '').downcase
-                    '<a class="internal" href="/'+slug+'.html" data-page-name="'+slug+'">'+name+'</a>'
-                }.
-        gsub(/\[(http.*?) (.*?)\]/i, '<a class="external" href="\1">\2</a>')
-    end
-
-    def openid_consumer
-      @openid_consumer ||= OpenID::Consumer.new(session, OpenID::Store::Filesystem.new("#{farm_status}/tmp/openid"))
-    end
-
-    def authenticated?
-      session[:authenticated] == true
-    end
-
-    def claimed?
-      File.exists? "#{farm_status}/open_id.identity"
-    end
-
-    def authenticate!
-      session[:authenticated] = true
-      redirect "/"
-    end
-
-    def oops status, message
-      haml :oops, :layout => false, :locals => {:status => status, :message => message}
-    end
-
+    id_data = Store.get_hash real_path
+    id_data ||= Store.put_hash(real_path, FileStore.get_hash(default_path))
   end
 
   post "/logout" do
@@ -121,8 +90,8 @@ class Controller < Sinatra::Base
       when OpenID::Consumer::SUCCESS
         id = params['openid.identity']
         id_file = File.join farm_status, "open_id.identity"
-        if File.exist?(id_file)
-          stored_id = File.read(id_file)
+        stored_id = Store.get_text(id_file)
+        if stored_id
           if stored_id == id
             # login successful
             authenticate!
@@ -130,7 +99,7 @@ class Controller < Sinatra::Base
             oops 403, "This is not your wiki"
           end
         else
-          File.open(id_file, "w") {|f| f << id }
+          Store.put_text id_file, id
           # claim successful
           authenticate!
         end
@@ -151,9 +120,7 @@ class Controller < Sinatra::Base
   get '/favicon.png' do
     content_type 'image/png'
     cross_origin
-    local = File.join farm_status, 'favicon.png'
-    Favicon.create local unless File.exists? local
-    File.read local
+    Favicon.get_or_create(File.join farm_status, 'favicon.png')
   end
 
   get '/random.png' do
@@ -163,9 +130,8 @@ class Controller < Sinatra::Base
     end
 
     content_type 'image/png'
-    local = File.join farm_status, 'favicon.png'
-    Favicon.create local
-    File.read local
+    path = File.join farm_status, 'favicon.png'
+    Store.put_blob path, Favicon.create_blob
   end
 
   get '/' do
@@ -173,20 +139,34 @@ class Controller < Sinatra::Base
   end
 
   get '/plugins/factory.js' do
-    # soon we'll construct this table from metadata
-    catalog = 'window.catalog = {
-      "ByteBeat": {"menu": "8-bit Music by Formula"},
-      "MathJax": {"menu": "TeX Formatted Equations"},
-      "Calculator": {"menu": "Running Sums for Expenses"}
-    };'
-    catalog + File.read(File.join(APP_ROOT, "client/plugins/meta-factory.js"))
+    catalog = Dir.glob(File.join(APP_ROOT, "client/plugins/*/factory.json")).collect do |info|
+      begin
+        JSON.parse(File.read(info))
+      rescue
+      end
+    end.reject {|info| info.nil?}
+    "window.catalog = #{JSON.generate(catalog)};" + File.read(File.join(APP_ROOT, "client/plugins/meta-factory.js"))
+  end
+
+  get %r{^/data/([\w -]+)$} do |search|
+    content_type 'application/json'
+    cross_origin
+    pages = Store.annotated_pages farm_page.directory
+    candidates = pages.select do |page|
+      datasets = page['story'].select do |item|
+        item['type']=='data' && item['text'] && item['text'].index(search)
+      end
+      datasets.length > 0
+    end
+    halt 404 unless candidates.length > 0
+    JSON.pretty_generate(candidates.first)
   end
 
   get %r{^/([a-z0-9-]+)\.html$} do |name|
     haml :page, :locals => { :page => farm_page.get(name), :page_name => name }
   end
 
-  get %r{^((/[a-zA-Z0-9:.-]+/[a-z0-9-]+)+)$} do
+  get %r{^((/[a-zA-Z0-9:.-]+/[a-z0-9-]+(_rev\d+)?)+)$} do
     elements = params[:captures].first.split('/')
     pages = []
     elements.shift
@@ -204,21 +184,21 @@ class Controller < Sinatra::Base
     content_type 'application/json'
     cross_origin
     bins = Hash.new {|hash, key| hash[key] = Array.new}
-    Dir.chdir(farm_page.directory) do
-      Dir.glob("*").collect do |slug|
-        dt = Time.now - File.new(slug).mtime
-        bins[(dt/=60)<1?'Minute':(dt/=60)<1?'Hour':(dt/=24)<1?'Day':(dt/=7)<1?'Week':(dt/=4)<1?'Month':(dt/=3)<1?'Season':(dt/=4)<1?'Year':'Forever']<<slug
-      end
+
+    pages = Store.annotated_pages farm_page.directory
+    pages.each do |page|
+      dt = Time.now - page['updated_at']
+      bins[(dt/=60)<1?'Minute':(dt/=60)<1?'Hour':(dt/=24)<1?'Day':(dt/=7)<1?'Week':(dt/=4)<1?'Month':(dt/=3)<1?'Season':(dt/=4)<1?'Year':'Forever']<<page
     end
+
     story = []
     ['Minute', 'Hour', 'Day', 'Week', 'Month', 'Season', 'Year'].each do |key|
       next unless bins[key].length>0
       story << {'type' => 'paragraph', 'text' => "<h3>Within a #{key}</h3>", 'id' => RandomId.generate}
-      bins[key].each do |slug|
-        page = farm_page.get(slug)
-        next if page['story'].length == 0
+      bins[key].each do |page|
+        next if page['story'].empty?
         site = "#{request.host}#{request.port==80 ? '' : ':'+request.port.to_s}"
-        story << {'type' => 'federatedWiki', 'site' => site, 'slug' => slug, 'title' => page['title'], 'text' => "", 'id' => RandomId.generate}
+        story << {'type' => 'federatedWiki', 'site' => site, 'slug' => page['name'], 'title' => page['title'], 'text' => "", 'id' => RandomId.generate}
       end
     end
     page = {'title' => 'Recent Changes', 'story' => story}
@@ -263,9 +243,7 @@ class Controller < Sinatra::Base
 
   get %r{^/([a-z0-9-]+)\.json$} do |name|
     content_type 'application/json'
-    cross_origin
-    halt 404 unless File.exists? "#{farm_page.directory}/#{name}" or File.exists? "#{farm_page.default_directory}/#{name}"
-    JSON.pretty_generate(farm_page.get(name))
+    serve_page name
   end
 
   error 403 do
@@ -280,6 +258,7 @@ class Controller < Sinatra::Base
 
     action = JSON.parse params['action']
     if site = action['fork']
+      # this fork is bundled with some other action
       page = JSON.parse RestClient.get("#{site}/#{name}.json")
       ( page['journal'] ||= [] ) << { 'type' => 'fork', 'site' => site }
       farm_page.put name, page
@@ -287,6 +266,8 @@ class Controller < Sinatra::Base
     elsif action['type'] == 'create'
       return halt 409 if farm_page.exists?(name)
       page = action['item'].clone
+    elsif action['type'] == 'fork'
+      page = JSON.parse RestClient.get("#{action['site']}/#{name}.json")
     else
       page = farm_page.get(name)
     end
@@ -301,7 +282,7 @@ class Controller < Sinatra::Base
       page['story'].delete_at page['story'].index{ |item| item['id'] == action['id'] }
     when 'edit'
       page['story'][page['story'].index{ |item| item['id'] == action['id'] }] = action['item']
-    when 'create'
+    when 'create', 'fork'
       page['story'] ||= []
     else
       puts "unfamiliar action: #{action.inspect}"
@@ -315,21 +296,31 @@ class Controller < Sinatra::Base
 
   get %r{^/remote/([a-zA-Z0-9:\.-]+)/([a-z0-9-]+)\.json$} do |site, name|
     content_type 'application/json'
-    RestClient.get "#{site}/#{name}.json" do |response, request, result, &block|
-      case response.code
-      when 200
-        response
-      when 404
-        halt 404
-      else
-        response.return!(request, result, &block)
+    host = site.split(':').first
+    if serve_resources_locally?(host)
+      serve_page(name, host)
+    else
+      RestClient.get "#{site}/#{name}.json" do |response, request, result, &block|
+        case response.code
+        when 200
+          response
+        when 404
+          halt 404
+        else
+          response.return!(request, result, &block)
+        end
       end
     end
   end
 
   get %r{^/remote/([a-zA-Z0-9:\.-]+)/favicon.png$} do |site|
     content_type 'image/png'
-    RestClient.get "#{site}/favicon.png"
+    host = site.split(':').first
+    if serve_resources_locally?(host)
+      Favicon.get_or_create(File.join farm_status(host), 'favicon.png')
+    else
+      RestClient.get "#{site}/favicon.png"
+    end
   end
 
 end

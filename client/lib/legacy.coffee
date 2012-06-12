@@ -1,6 +1,6 @@
 window.wiki = {}
 util = require('./util.coffee')
-fetch = require('./fetch.coffee')
+pageHandler = wiki.pageHandler = require('./pageHandler.coffee')
 plugin = require('./plugin.coffee')
 state = require('./state.coffee')
 active = require('./active.coffee')
@@ -66,95 +66,123 @@ $ ->
       .replace(/\[\[([^\]]+)\]\]/gi, renderInternalLink)
       .replace(/\[(http.*?) (.*?)\]/gi, "<a class=\"external\" target=\"_blank\" href=\"$1\">$2</a>")
 
+  wiki.symbols =
+    create: '☼'
+    add: '+'
+    edit: '✎'
+    fork: '⚑'
+    move: '↕'
+    remove: '✕'
+
   addToJournal = wiki.addToJournal = (journalElement, action) ->
     pageElement = journalElement.parents('.page:first')
+    prev = journalElement.find(".edit[data-id=#{action.id || 0}]") if action.type == 'edit'
+    actionTitle = action.type
+    actionTitle += "(#{prev.length})" if action.type == 'edit'
+    actionTitle += ": #{util.formatDate(action.date)}" if action.date?
     actionElement = $("<a href=\"\#\" /> ").addClass("action").addClass(action.type)
-      .text(action.type[0])
-      .attr('title',action.type)
+      .text(wiki.symbols[action.type])
+      .attr('title',actionTitle)
       .attr('data-id', action.id || "0")
-      .appendTo(journalElement)
+      .data('action', action)
+    controls = journalElement.children('.control-buttons')
+    if controls.length > 0
+      actionElement.insertBefore(controls)
+    else
+      actionElement.appendTo(journalElement)
     if action.type == 'fork'
       actionElement
         .css("background-image", "url(//#{action.site}/favicon.png)")
         .attr("href", "//#{action.site}/#{pageElement.attr('id')}.html")
         .data("site", action.site)
         .data("slug", pageElement.attr('id'))
-    else
-      actionElement.on 'click', ->
-        wiki.dialog "#{action.type} action", $('<pre/>').text(JSON.stringify(action, null, 2))
-    if action.type == 'edit'
-      prev = journalElement.find(".edit[data-id=#{action.id || 0}]")
-      actionElement.attr 'title', "edit #{prev.length}"
 
   useLocalStorage = wiki.useLocalStorage = ->
     wiki.log 'useLocalStorage', $(".login").length > 0
     $(".login").length > 0
 
-  putAction = wiki.putAction = (pageElement, action) ->
-    if (site = pageElement.data('site'))?
-      action.fork = site
-      pageElement.find('h1 img').attr('src', '/favicon.png')
-      pageElement.find('h1 a').attr('href', '/')
-      pageElement.data('site', null)
-      state.setUrl()
-      addToJournal pageElement.find('.journal'),
-        type: 'fork'
-        site: site
-    if useLocalStorage()
-      pushToLocal(pageElement, action)
-      pageElement.addClass("local")
-    else
-      pushToServer(pageElement, action)
+  createTextElement = (pageElement, beforeElement, initialText) ->
+    item =
+      type: 'paragraph'
+      id: util.randomBytes(8)
+      text: initialText
+    itemElement = $ """
+      <div class="item paragraph" data-id=#{item.id}></div>
+                    """
+    itemElement
+      .data('item', item)
+      .data('pageElement', pageElement)
+    beforeElement.after itemElement
+    plugin.do itemElement, item
+    itemBefore = wiki.getItem beforeElement
+    wiki.textEditor itemElement, item
+    sleep = (time, code) -> setTimeout code, time
+    sleep 500, -> pageHandler.put pageElement, {item: item, id: item.id, type: 'add', after: itemBefore?.id}
 
-  pushToLocal = (pageElement, action) ->
-    page = localStorage[pageElement.attr("id")]
-    page = JSON.parse(page) if page
-    page = action.item if action.type == 'create'
-    page ||= pageElement.data("data")
-    page.journal = [] unless page.journal?
-    page.journal.concat(action)
-    page.story = $(pageElement).find(".item").map(-> $(@).data("item")).get()
-    localStorage[pageElement.attr("id")] = JSON.stringify(page)
-    addToJournal pageElement.find('.journal'), action
-
-  pushToServer = (pageElement, action) ->
-    $.ajax
-      type: 'PUT'
-      url: "/page/#{pageElement.attr('id')}/action"
-      data:
-        'action': JSON.stringify(action)
-      success: () ->
-        addToJournal pageElement.find('.journal'), action
-      error: (xhr, type, msg) ->
-        wiki.log "ajax error callback", type, msg
-
-  textEditor = wiki.textEditor = (div, item) ->
+  textEditor = wiki.textEditor = (div, item, caretPos) ->
     textarea = $("<textarea>#{original = item.text ? ''}</textarea>")
       .focusout ->
         if item.text = textarea.val()
           plugin.do div.empty(), item
           return if item.text == original
-          putAction div.parents('.page:first'), {type: 'edit', id: item.id, item: item}
+          pageHandler.put div.parents('.page:first'), {type: 'edit', id: item.id, item: item}
         else
-          putAction div.parents('.page:first'), {type: 'remove', id: item.id}
+          pageHandler.put div.parents('.page:first'), {type: 'remove', id: item.id}
           div.remove()
         null
       .bind 'keydown', (e) ->
         if (e.altKey || e.ctlKey || e.metaKey) and e.which == 83 #alt-s
           textarea.focusout()
           return false
+        if e.which == $.ui.keyCode.BACKSPACE and util.getCaretPosition(textarea.get(0)) == 0
+          prevItem = getItem(div.prev())
+          return unless prevItem.text?
+          prevTextLen = prevItem.text.length
+          prevItem.text += textarea.val()
+          textarea.val('') # Need current text area to be empty. Item then gets deleted.
+          # caret needs to be between the old text and the new appended text
+          textEditor div.prev(), prevItem, prevTextLen
+          return false
+        else if e.which == $.ui.keyCode.ENTER
+          caret = util.getCaretPosition textarea.get(0)
+          return false unless caret
+          text = textarea.val()
+          prefix = text.substring(0,caret)
+          suffix = text.substring(caret)
+          textarea.val(prefix)
+          textarea.focusout()
+          pageElement = div.parent().parent()
+          createTextElement(pageElement, div, suffix)
+          return false
       .bind 'dblclick', (e) ->
         return false; #don't pass dblclick on to the div, as it'll reload
 
     div.html textarea
-    textarea.focus()
+    if caretPos?
+      util.setCaretPosition textarea.get(0), caretPos
+    else
+      textarea.focus()
 
   getItem = wiki.getItem = (element) ->
-    $(element).data("item") or JSON.parse($(element).data('staticItem')) if $(element).length > 0
+    $(element).data("item") or $(element).data('staticItem') if $(element).length > 0
 
-  wiki.getData = ->
-    who = $('.chart,.data,.calculator').last()
-    if who? then who.data('item').data else {}
+  wiki.getData = (vis) ->
+    if vis
+      idx = $('.item').index(vis)
+      who = $(".item:lt(#{idx})").filter('.chart,.data,.calculator').last()
+      if who? then who.data('item').data else {}
+    else
+      who = $('.chart,.data,.calculator').last()
+      if who? then who.data('item').data else {}
+
+  wiki.getDataNodes = (vis) ->
+    if vis
+      idx = $('.item').index(vis)
+      who = $(".item:lt(#{idx})").filter('.chart,.data,.calculator').toArray().reverse()
+      $(who)
+    else
+      who = $('.chart,.data,.calculator').toArray().reverse()
+      $(who)
 
   doInternalLink = wiki.doInternalLink = (name, page) ->
     name = util.asSlug(name)
@@ -213,13 +241,40 @@ $ ->
 
     .delegate '.internal', 'click', (e) ->
       name = $(e.target).data 'pageName'
-      fetch.context = $(e.target).attr('title').split(' => ')
+      pageHandler.context = $(e.target).attr('title').split(' => ')
       finishClick e, name
 
-    .delegate '.action.fork, .remote', 'click', (e) ->
+    .delegate '.remote', 'click', (e) ->
       name = $(e.target).data('slug')
-      fetch.context = [$(e.target).data('site')]
+      pageHandler.context = [$(e.target).data('site')]
       finishClick e, name
+
+    .delegate '.action', 'click', (e) ->
+      e.preventDefault()
+      element = $(e.target)
+      if e.shiftKey
+        return wiki.dialog "#{element.data('action').type} action", $('<pre/>').text(JSON.stringify(element.data('action'), null, 2))
+      if element.is('.fork')
+        name = $(e.target).data('slug')
+        pageHandler.context = [$(e.target).data('site')]
+        finishClick e, name
+      else
+        journalEntryIndex = $(this).parent().children().index(element)
+        data = $(this).parent().parent().data('data')
+        titleUrl = util.asSlug(data.title)
+        revUrl = "#{titleUrl}_rev#{journalEntryIndex}"
+        e.preventDefault()
+        page = $(e.target).parents('.page') unless e.shiftKey
+        $(page).nextAll().remove() if page?
+        createPage(revUrl)
+          .appendTo($('.main'))
+          .each refresh
+        active.set($('.page').last())
+
+    .delegate '.fork-page', 'click', (e) ->
+      pageElement = $(e.target).parents('.page')
+      return unless (remoteSite = pageElement.data('site'))?
+      pageHandler.put pageElement, {type:'fork', site: remoteSite}
 
     .delegate '.action', 'hover', ->
       id = $(this).attr('data-id')
