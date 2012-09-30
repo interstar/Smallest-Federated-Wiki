@@ -20,6 +20,9 @@ random = require('./random_id')
 passportImport = require('passport')
 OpenIDstrat = require('passport-openid').Strategy
 defargs = require('./defaultargs')
+util = require('../../../client/lib/util')
+WebSocketServer = require('ws').Server
+
 
 # pageFactory can be easily replaced here by requiring your own page handler
 # factory, which gets called with the argv object, and then has get and put
@@ -37,6 +40,33 @@ gitVersion = child_process.exec('git log -10 --oneline || echo no git log', (err
 module.exports = exports = (argv) ->
   # Create the main application object, app.
   app = express.createServer()
+
+  # General, gloabl use sockets
+  echoSocket     = new WebSocketServer({server: app, path: '/system/echo'})
+  logWatchSocket = new WebSocketServer({server: app, path: '/system/logwatch'})
+  echoSocket.on('connection', (ws) ->
+    ws.on('message', (message) ->
+      console.log ['socktest message from client: ', message]
+      try
+        ws.send(message)
+      catch e
+        console.log ['unable to send ws message: ', e]
+    )
+  )
+  logWatchSocket.on('connection', (ws) ->
+    logWatchSocket.on('fetch', (page) ->
+      reference =
+        title: page.title
+      try
+        ws.send(JSON.stringify reference)
+      catch e
+        console.log ['unable to send ws message: ', e]
+    )
+    ws.on('message', (message) ->
+      console.log ['logWatch message from client: ', message]
+    )
+  )
+
   # defaultargs.coffee exports a function that takes the argv object
   # that is passed in and then does its
   # best to supply sane defaults for any arguments that are missing.
@@ -76,6 +106,14 @@ module.exports = exports = (argv) ->
       else
         cb()
     )
+
+  #### Middleware ####
+  #
+  # Allow json to be got cross origin.
+  cors = (req, res, next) ->
+    res.header('Access-Control-Allow-Origin', '*')
+    next()
+
 
   # If claimed, make sure that an action can only be taken
   # by the owner, and returns 403 if someone else tries.
@@ -144,7 +182,9 @@ module.exports = exports = (argv) ->
         cb(e, 'Page not found', 404)
       )
       resp.on('end', ->
-        if responsedata
+        if resp.statusCode == 404
+          cb(null, 'Page not found', 404)
+        else if responsedata
           cb(null, JSON.parse(responsedata), resp.statusCode)
         else
           cb(null, 'Page not found', 404)
@@ -196,7 +236,7 @@ module.exports = exports = (argv) ->
   ##### Redirects #####
   # Common redirects that may get used throughout the routes.
   app.redirect('index', (req, res) ->
-    '/view/welcome-visitors'
+    '/view/' + argv.s
   )
 
   app.redirect('remotefav', (req, res) ->
@@ -215,12 +255,13 @@ module.exports = exports = (argv) ->
     res.sendfile("#{argv.r}/server/express/views/style.css")
   )
 
+
   # Main route for initial contact.  Allows us to
   # link into a specific set of pages, local and remote.
   # Can also be handled by the client, but it also sets up
   # the login status, and related footer html, which the client
   # relies on to know if it is logged in or not.
-  app.get(///^((/[a-zA-Z0-9:.-]+/[a-z0-9-]+)+)/?$///, (req, res) ->
+  app.get(///^((/[a-zA-Z0-9:.-]+/[a-z0-9-]+(_rev\d+)?)+)/?$///, (req, res) ->
     urlPages = (i for i in req.params[0].split('/') by 2)[1..]
     urlLocs = (j for j in req.params[0].split('/')[1..] by 2)
     info = {
@@ -237,7 +278,7 @@ module.exports = exports = (argv) ->
       if urlLocs[idx] is 'view'
         pageDiv = {page}
       else
-        pageDiv = {page, origin: "data-site=#{urlLocs[idx]}"}
+        pageDiv = {page, origin: """data-site=#{urlLocs[idx]}"""}
       info.pages.push(pageDiv)
     res.render('static.html', info)
   )
@@ -261,10 +302,11 @@ module.exports = exports = (argv) ->
   ###### Json Routes ######
   # Handle fetching local and remote json pages.
   # Local pages are handled by the pagehandler module.
-  app.get(///^/([a-z0-9-]+)\.json$///, (req, res) ->
+  app.get(///^/([a-z0-9-]+)\.json$///, cors, (req, res) ->
     file = req.params[0]
     pagehandler.get(file, (e, page, status) ->
       if e then throw e
+      logWatchSocket.emit 'fetch', page unless status
       res.json(page, status)
     )
   )
@@ -282,7 +324,7 @@ module.exports = exports = (argv) ->
   # If favLoc doesn't exist send 404 and let the client
   # deal with it.
   favLoc = path.join(argv.status, 'favicon.png')
-  app.get('/favicon.png', (req,res) ->
+  app.get('/favicon.png', cors, (req,res) ->
     res.sendfile(favLoc)
   )
 
@@ -314,11 +356,43 @@ module.exports = exports = (argv) ->
 
   ###### Meta Routes ######
   # Send an array of pages in the database via json
-  app.get('/system/slugs.json', (req, res) ->
+  app.get('/system/slugs.json', cors, (req, res) ->
     fs.readdir(argv.db, (err, files) ->
       res.send(files)
     )
   )
+
+  app.get('/system/plugins.json', cors, (req, res) ->
+    fs.readdir(path.join(argv.c, 'plugins'), (err, files) ->
+      res.send(files)
+    )
+  )
+
+  app.get('/system/sitemap.json', cors, (req, res) ->
+    fs.readdir(argv.db, (err, files) ->
+      sitemap = []
+      # used to make sure all of the files are read 
+      # and processesed in the site map before responding
+      numFiles = files.length 
+      for file in files
+        pagehandler.get(file, (e, page, status) ->
+          if e 
+            numFiles--
+            console.log(['pagehandler exception', e])
+            return
+          sitemap.push({
+            slug     : page.title.replace(/\s/g, '-').replace(/[^A-Za-z0-9-]/g, '').toLowerCase(),
+            title    : page.title,
+            date     : page.journal and page.journal.length > 0 and page.journal.pop().date,
+            synopsis : util.createSynopsis(page)
+          })
+          numFiles--
+          if numFiles == 0
+            res.json(sitemap)
+        ) 
+    )    
+  ) 
+
 
   ##### Put routes #####
 
@@ -429,3 +503,4 @@ module.exports = exports = (argv) ->
   )
   # Return app when called, so that it can be watched for events and shutdown with .close() externally.
   app
+
