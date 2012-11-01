@@ -95,9 +95,9 @@ footer {
   margin-bottom: 0.4em;
   background: #eeeeee;
   padding: 0.8em;
-  width: 40%; }
+  width: 42%; }
 
-.image img {
+.image .thumbnail {
   width: 100%; }
 
 .journal {

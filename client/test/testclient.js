@@ -1243,6 +1243,7 @@ require.define("/test/refresh.coffee", function (require, module, exports, __dir
 require.define("/lib/refresh.coffee", function (require, module, exports, __dirname, __filename) {
 (function() {
   var createFactory, emitHeader, handleDragging, initAddButton, initDragging, neighborhood, pageHandler, plugin, refresh, state, util;
+  var __slice = Array.prototype.slice;
 
   util = require('./util.coffee');
 
@@ -1331,9 +1332,9 @@ require.define("/lib/refresh.coffee", function (require, module, exports, __dirn
     var date, rev, site;
     site = $(pageElement).data('site');
     if ((site != null) && site !== 'local' && site !== 'origin' && site !== 'view') {
-      $(pageElement).append("<h1><a href=\"//" + site + "\"><img src = \"http://" + site + "/favicon.png\" height = \"32px\"></a> " + page.title + "</h1>");
+      $(pageElement).append("<h1 title=\"" + site + "\"><a href=\"//" + site + "\"><img src = \"http://" + site + "/favicon.png\" height = \"32px\"></a> " + page.title + "</h1>");
     } else {
-      $(pageElement).append($("<h1 />").append($("<a />").attr('href', '/').append($("<img>").error(function(e) {
+      $(pageElement).append($("<h1 title=\"" + location.host + "\"/>").append($("<a />").attr('href', '/').append($("<img>").error(function(e) {
         return plugin.get('favicon', function(favicon) {
           return favicon.create();
         });
@@ -1416,7 +1417,7 @@ require.define("/lib/refresh.coffee", function (require, module, exports, __dirn
       wasServerGenerated: pageElement.attr('data-server-generated') === 'true'
     };
     createGhostPage = function() {
-      var page, title;
+      var heading, hits, info, page, result, site, title, _ref2, _ref3;
       title = $("a[href=\"/" + slug + ".html\"]:last").text() || slug;
       page = {
         'title': title,
@@ -1429,6 +1430,35 @@ require.define("/lib/refresh.coffee", function (require, module, exports, __dirn
           }
         ]
       };
+      heading = {
+        'type': 'paragraph',
+        'id': util.randomBytes(8),
+        'text': "We did find the page in your current neighborhood."
+      };
+      hits = [];
+      _ref2 = wiki.neighborhood;
+      for (site in _ref2) {
+        info = _ref2[site];
+        if (info.sitemap != null) {
+          result = _.find(info.sitemap, function(each) {
+            return each.slug === slug;
+          });
+          if (result != null) {
+            hits.push({
+              "type": "reference",
+              "id": util.randomBytes(8),
+              "site": site,
+              "slug": slug,
+              "title": result.title || slug,
+              "text": result.synopsis || ''
+            });
+          }
+        }
+      }
+      if (hits.length > 0) {
+        (_ref3 = page.story).push.apply(_ref3, [heading].concat(__slice.call(hits)));
+        page.story[0].text = 'We could not find this page in the expected context.';
+      }
       return wiki.buildPage(page, void 0, pageElement).addClass('ghost');
     };
     registerNeighbors = function(data, site) {
@@ -1557,7 +1587,7 @@ require.define("/lib/plugin.coffee", function (require, module, exports, __dirna
       emit: function(div, item) {
         item.text || (item.text = item.caption);
         wiki.log('image', item);
-        return div.append("<img src=\"" + item.url + "\"> <p>" + (wiki.resolveLinks(item.text)) + "</p>");
+        return div.append("<img class=thumbnail src=\"" + item.url + "\"> <p>" + (wiki.resolveLinks(item.text)) + "</p>");
       },
       bind: function(div, item) {
         div.dblclick(function() {
@@ -1570,7 +1600,21 @@ require.define("/lib/plugin.coffee", function (require, module, exports, __dirna
     },
     future: {
       emit: function(div, item) {
-        return div.append("<p>" + item.text + "<br><button class=\"create\">create</button>");
+        var info, _i, _len, _ref, _results;
+        div.append("" + item.text + "<br><br><button class=\"create\">create</button> new blank page");
+        if (((info = wiki.neighborhood[location.host]) != null) && (info.sitemap != null)) {
+          _ref = info.sitemap;
+          _results = [];
+          for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+            item = _ref[_i];
+            if (item.slug.match(/-template$/)) {
+              _results.push(div.append("<br><button class=\"create\" data-slug=" + item.slug + ">create</button> from " + (wiki.resolveLinks("[[" + item.title + "]]"))));
+            } else {
+              _results.push(void 0);
+            }
+          }
+          return _results;
+        }
       },
       bind: function(div, item) {}
     }

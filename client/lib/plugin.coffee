@@ -62,10 +62,15 @@ window.plugins =
     emit: (div, item) ->
       item.text ||= item.caption
       wiki.log 'image', item
-      div.append "<img src=\"#{item.url}\"> <p>#{wiki.resolveLinks(item.text)}</p>"
+      div.append "<img class=thumbnail src=\"#{item.url}\"> <p>#{wiki.resolveLinks(item.text)}</p>"
     bind: (div, item) ->
       div.dblclick -> wiki.textEditor div, item
       div.find('img').dblclick -> wiki.dialog item.text, this
   future:
-    emit: (div, item) -> div.append """<p>#{item.text}<br><button class="create">create</button>"""
+    emit: (div, item) ->
+      div.append """#{item.text}<br><br><button class="create">create</button> new blank page"""
+      if (info = wiki.neighborhood[location.host])? and info.sitemap?
+        for item in info.sitemap
+          if item.slug.match /-template$/
+            div.append """<br><button class="create" data-slug=#{item.slug}>create</button> from #{wiki.resolveLinks "[[#{item.title}]]"}"""
     bind: (div, item) ->

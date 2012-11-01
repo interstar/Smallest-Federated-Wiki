@@ -67,11 +67,11 @@ emitHeader = (pageElement, page) ->
   site = $(pageElement).data('site')
   if site? and site != 'local' and site != 'origin' and site != 'view'
     $(pageElement)
-      .append "<h1><a href=\"//#{site}\"><img src = \"http://#{site}/favicon.png\" height = \"32px\"></a> #{page.title}</h1>"
+      .append """<h1 title="#{site}"><a href="//#{site}"><img src = "http://#{site}/favicon.png" height = "32px"></a> #{page.title}</h1>"""
   else
     $(pageElement)
       .append(
-        $("<h1 />").append(
+        $("""<h1 title="#{location.host}"/>""").append(
           $("<a />").attr('href', '/').append(
             $("<img>")
               .error((e) ->
@@ -179,6 +179,26 @@ module.exports = refresh = wiki.refresh = ->
         'text': 'We could not find this page.'
         'title': title
       ]
+    heading =
+      'type': 'paragraph'
+      'id': util.randomBytes(8)
+      'text': "We did find the page in your current neighborhood."
+    hits = []
+    for site, info of wiki.neighborhood
+      if info.sitemap?
+        result = _.find info.sitemap, (each) ->
+          each.slug == slug
+        if result?
+          hits.push
+            "type": "reference"
+            "id": util.randomBytes(8)
+            "site": site
+            "slug": slug
+            "title": result.title || slug
+            "text": result.synopsis || ''
+    if hits.length > 0
+      page.story.push heading, hits...
+      page.story[0].text = 'We could not find this page in the expected context.'
     wiki.buildPage( page, undefined, pageElement ).addClass('ghost')
 
   registerNeighbors = (data, site) ->
